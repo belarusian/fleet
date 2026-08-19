@@ -4,9 +4,24 @@ Subcommands:
   - ``fleet status [--root DIR] [--filter active|stalled|dead|all]``
         Scan the root, assess each project, and print a markdown portfolio
         table (optionally filtered by health).
+  - ``fleet snapshot [--root DIR] [--snapshot FILE]``
+        Scan the root, assess each project, and save the portfolio as a JSON
+        snapshot (the baseline that :func:`diff` compares against).
   - ``fleet diff [--root DIR] [--snapshot FILE]``
         Compare the current portfolio against a saved snapshot JSON and print
         a markdown diff table.
+
+Design notes
+------------
+- ``--root`` defaults to ``~/AI`` on every subcommand.
+- ``diff`` is deliberately *unfiltered*: it surfaces the full change set
+  (added / removed / changed). A health filter does not map cleanly onto diff
+  rows because ``removed`` rows have no resulting health, and filtering would
+  hide part of the change set. Use ``status --filter`` for a health view of
+  the current state.
+- Machine-readable (``--json``) output is intentionally not provided yet: no
+  consumer needs it, and the data model (``ProjectHealth`` / ``DiffRow``)
+  would serialize trivially if a concrete consumer appears.
 """
 
 from __future__ import annotations
@@ -23,7 +38,7 @@ _VALID_FILTERS = ("active", "stalled", "dead", "all")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    """Build the top-level argument parser with the two subcommands."""
+    """Build the top-level argument parser with the three subcommands."""
     parser = argparse.ArgumentParser(
         prog="fleet",
         description="Multi-project health scanner for the four pipeline.",
@@ -42,6 +57,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default="all",
         choices=_VALID_FILTERS,
         help="filter rows by health (default: all)",
+    )
+
+    snap = sub.add_parser("snapshot", help="save the current portfolio as a snapshot JSON")
+    snap.add_argument(
+        "--root",
+        default="~/AI",
+        help="scan root (default: ~/AI)",
+    )
+    snap.add_argument(
+        "--snapshot",
+        default="snapshot.json",
+        help="path to write the snapshot JSON (default: snapshot.json)",
     )
 
     diff = sub.add_parser("diff", help="diff the current portfolio against a snapshot")
@@ -73,6 +100,14 @@ def _cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_snapshot(args: argparse.Namespace) -> int:
+    """Run the ``snapshot`` subcommand; return a process exit code."""
+    healths = _assess_all(args.root)
+    path = snapshot_mod.save_snapshot(healths, args.snapshot)
+    print(f"saved {len(healths)} project(s) to {path}")
+    return 0
+
+
 def _cmd_diff(args: argparse.Namespace) -> int:
     """Run the ``diff`` subcommand; return a process exit code."""
     snap_path = Path(args.snapshot).expanduser()
@@ -92,6 +127,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "status":
         return _cmd_status(args)
+    if args.command == "snapshot":
+        return _cmd_snapshot(args)
     if args.command == "diff":
         return _cmd_diff(args)
     parser.error(f"unknown command: {args.command}")
