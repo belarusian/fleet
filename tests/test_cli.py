@@ -242,3 +242,102 @@ def test_cli_diff_snapshot_default_is_snapshot_json() -> None:
     args = parser.parse_args(["diff", "--root", "/tmp/whatever"])
     assert args.snapshot == "snapshot.json"
     assert args.root == "/tmp/whatever"
+
+
+# ---------------------------------------------------------------------------
+# CLI `snapshot` subcommand
+# ---------------------------------------------------------------------------
+
+
+def _run_snapshot(root: Path, snap_path: Path, capsys) -> tuple[int, str, str]:
+    """Run ``fleet snapshot --root <root> --snapshot <snap>``; return (rc, out, err)."""
+    argv = ["snapshot", "--root", str(root), "--snapshot", str(snap_path)]
+    with mock.patch.object(health, "count_open_issues", side_effect=_issues), mock.patch.object(
+        health, "datetime", _FakeDatetime
+    ):
+        rc = cli.main(argv)
+    out, err = capsys.readouterr()
+    return rc, out, err
+
+
+def test_cli_snapshot_saves_current_portfolio(tmp_path: Path, capsys) -> None:
+    """`snapshot` writes the assessed portfolio to the target path and exits 0."""
+    _build_root(tmp_path)
+    snap_path = tmp_path / "snap.json"
+    rc, out, err = _run_snapshot(tmp_path, snap_path, capsys)
+
+    assert rc == 0
+    assert err == ""
+    assert snap_path.is_file()
+    # The saved snapshot round-trips to the assessed portfolio (no repo).
+    snap = snapshot.load_snapshot(snap_path)
+    assessed = _assess_root_no_repo(tmp_path)
+    assert [h.name for h in snap.projects] == [h.name for h in assessed]
+    for saved, cur in zip(snap.projects, assessed, strict=True):
+        assert saved.name == cur.name
+        assert saved.health == cur.health
+        assert saved.last_cycle == cur.last_cycle
+        assert saved.last_outcome == cur.last_outcome
+    # stdout reports the count and the path written.
+    assert "3 project(s)" in out
+    assert str(snap_path) in out
+
+
+def test_cli_snapshot_creates_parent_dirs(tmp_path: Path, capsys) -> None:
+    """`snapshot` creates missing parent directories for the target path."""
+    _build_root(tmp_path)
+    nested = tmp_path / "deep" / "nested" / "snap.json"
+    rc, out, err = _run_snapshot(tmp_path, nested, capsys)
+    assert rc == 0
+    assert nested.is_file()
+    assert snapshot.load_snapshot(nested).projects
+
+
+def test_cli_snapshot_then_diff_is_end_to_end(tmp_path: Path, capsys) -> None:
+    """A `snapshot` baseline followed by an unchanged `diff` reports no changes."""
+    _build_root(tmp_path)
+    snap_path = tmp_path / "snap.json"
+    rc1, _, _ = _run_snapshot(tmp_path, snap_path, capsys)
+    assert rc1 == 0
+
+    # Portfolio is unchanged, so diff against the just-saved baseline is empty.
+    rc2, out, err = _run_diff(tmp_path, snap_path, capsys)
+    assert rc2 == 0
+    assert err == ""
+    assert "| (no changes) | - | - |" in out
+
+
+def test_cli_snapshot_then_diff_shows_changes(tmp_path: Path, capsys) -> None:
+    """A `snapshot` baseline followed by a mutated `diff` surfaces the change."""
+    _build_root(tmp_path)
+    snap_path = tmp_path / "snap.json"
+    rc1, _, _ = _run_snapshot(tmp_path, snap_path, capsys)
+    assert rc1 == 0
+
+    # Add a new project after the baseline; diff must surface it as `added`.
+    make_project(tmp_path, "delta", now=NOW, days_ago=2, n_traj=2, outcome="exit:task_complete")
+    rc2, out, err = _run_diff(tmp_path, snap_path, capsys)
+    assert rc2 == 0
+    assert err == ""
+    assert "| delta | added |" in out
+
+
+# ---------------------------------------------------------------------------
+# --root default (pins the documented ~/AI default on every subcommand)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_root_defaults_to_home_ai() -> None:
+    """Every subcommand's --root defaults to '~/AI'."""
+    parser = cli._build_parser()
+    for cmd in ("status", "snapshot", "diff"):
+        args = parser.parse_args([cmd])
+        assert args.root == "~/AI", f"{cmd}: --root default should be ~/AI"
+
+
+def test_cli_snapshot_default_is_snapshot_json() -> None:
+    """The snapshot subcommand's --snapshot default is 'snapshot.json'."""
+    parser = cli._build_parser()
+    args = parser.parse_args(["snapshot", "--root", "/tmp/whatever"])
+    assert args.snapshot == "snapshot.json"
+    assert args.root == "/tmp/whatever"
