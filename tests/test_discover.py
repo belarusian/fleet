@@ -78,3 +78,91 @@ def test_is_project_predicate(tmp_path: Path) -> None:
         '{"outcome": "x", "messages": []}', encoding="utf-8"
     )
     assert discover.is_project(ai) is True
+
+
+# --- edge-case hardening tests ---
+
+
+def test_discover_empty_root(tmp_path: Path) -> None:
+    """An empty root directory yields an empty list."""
+    assert discover.discover(tmp_path) == []
+
+
+def test_discover_root_with_only_non_project_dirs(tmp_path: Path) -> None:
+    """A root with only non-project directories yields an empty list."""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "notes").mkdir()
+    # A dir with ai/ but no trajectories and no gate log is not a project.
+    (tmp_path / "emptyproj" / "ai").mkdir(parents=True)
+    assert discover.discover(tmp_path) == []
+
+
+def test_discover_gate_log_without_cycle_block(tmp_path: Path) -> None:
+    """A gate log file that exists but has no '## Cycle' block is still a project."""
+    proj = tmp_path / "gated"
+    ai = proj / "ai"
+    ai.mkdir(parents=True)
+    # Gate log with content but no "## Cycle N" header.
+    (ai / "cycle-001-gate.md").write_text(
+        "# Gate Log\n\nSome free-form text without any cycle blocks.\n",
+        encoding="utf-8",
+    )
+    found = discover.discover(tmp_path)
+    assert len(found) == 1
+    assert found[0].name == "gated"
+
+
+def _gate_log_md(cycle_no: int, title: str, gate_after: str) -> str:
+    """Build a minimal gate-log markdown block with a single Results row."""
+    rows = [
+        f"## Cycle {cycle_no}: {title}",
+        "### Results",
+        "| Check | Before | After |",
+        "|---|---|---|",
+        f"| Gate (build+test+lint) | red | {gate_after} |",
+    ]
+    return "\n".join(rows) + "\n"
+
+
+def test_discover_multiple_gate_logs_prefers_cycle_001(tmp_path: Path) -> None:
+    """When multiple gate logs exist, fourseer prefers the one with cycle-001."""
+    import fourseer
+
+    proj = tmp_path / "multi"
+    ai = proj / "ai"
+    ai.mkdir(parents=True)
+    # Two gate logs: one with cycle-001 in the name, one without.
+    (ai / "cycle-002-gate.md").write_text(
+        _gate_log_md(2, "Later", "red"), encoding="utf-8"
+    )
+    (ai / "cycle-001-gate.md").write_text(
+        _gate_log_md(1, "Earlier", "green"), encoding="utf-8"
+    )
+    # fourseer.load_run should prefer cycle-001.
+    run = fourseer.load_run(ai)
+    assert len(run.gate_log.cycles) == 1
+    assert run.gate_log.cycles[0].cycle_no == 1
+    assert run.gate_log.cycles[0].gate_after == "green"
+
+
+def test_discover_trajectory_dir_with_single_file(tmp_path: Path) -> None:
+    """A trajectories dir with exactly one JSON file is a valid project."""
+    import json
+
+    proj = tmp_path / "single"
+    ai = proj / "ai"
+    (ai / "trajectories").mkdir(parents=True)
+    (ai / "trajectories" / "trajectory_0000.json").write_text(
+        json.dumps({"outcome": "exit:task_complete", "messages": []}),
+        encoding="utf-8",
+    )
+    found = discover.discover(tmp_path)
+    assert len(found) == 1
+    assert found[0].name == "single"
+    assert found[0].ai_dir == ai
+
+
+def test_project_ref_alias() -> None:
+    """ProjectRef is an alias for Project."""
+    assert discover.ProjectRef is discover.Project

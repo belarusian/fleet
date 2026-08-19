@@ -102,5 +102,9 @@ def discover(root: str | Path) -> list[Project]:
                 seen.add(ai)
                 found.append(Project(name=child.name, path=child, ai_dir=ai))
 
-    found.sort(key=lambda p: p.name)
+    found.sort(key=lambda p: (p.name, str(p.path)))
     return found
+
+
+# Alias for API parity: callers may prefer the shorter name.
+ProjectRef = Project
