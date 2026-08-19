@@ -18,7 +18,7 @@ from unittest import mock
 
 import pytest
 
-from fleet import cli, health, report, snapshot
+from fleet import __version__, cli, health, report, snapshot
 from tests._fixtures import make_project
 
 NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -429,3 +429,39 @@ def test_cli_diff_help_shows_snapshot(capsys) -> None:
     """``diff --help`` exits 0 and shows the --snapshot option."""
     out = _run_help(["diff", "--help"], capsys)
     assert "--snapshot" in out
+
+
+# ---------------------------------------------------------------------------
+# Release: top-level --version flag (TICKET-048)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_version_flag_exits_zero_and_prints_version(capsys) -> None:
+    """``fleet --version`` exits 0 and prints a line containing the version.
+
+    argparse's ``action="version"`` writes to stdout and raises
+    ``SystemExit(0)``. The printed line must contain ``fleet.__version__``.
+    """
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert __version__ in out
+
+
+def test_cli_version_flag_prints_exact_version(capsys) -> None:
+    """The ``--version`` output is exactly ``fleet <__version__>``.
+
+    Pins the version string so a silent bump in ``fleet/__init__.py`` is
+    caught here (and in ``pyproject.toml`` via the packaging metadata).
+    """
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert out.strip() == f"fleet {__version__}"
+
+
+def test_cli_version_is_0_1_0() -> None:
+    """The shipped version is pinned to 0.1.0 (first release)."""
+    assert __version__ == "0.1.0"

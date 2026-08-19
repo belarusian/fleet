@@ -30,7 +30,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from fleet import discover, report
+from fleet import __version__, discover, report
 from fleet import health as health_mod
 from fleet import snapshot as snapshot_mod
 
@@ -42,6 +42,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fleet",
         description="Multi-project health scanner for the four pipeline.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"fleet {__version__}",
+        help="print the fleet version and exit",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
