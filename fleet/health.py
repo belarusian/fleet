@@ -7,7 +7,7 @@ open issue count, and a health classification.
 Health classification (by days since last activity):
   - ``active``  — ran within 7 days
   - ``stalled`` — 8-30 days
-  - ``dead``    — 30+ days, or no trajectories at all
+  - ``dead``    — more than 30 days, or no trajectories at all
 """
 
 from __future__ import annotations
@@ -183,7 +183,7 @@ def count_open_issues(repo: str | None) -> int:
 def classify_health(days: int | None, has_trajectories: bool) -> str:
     """Classify health from days-since-activity and trajectory presence.
 
-    ``dead`` when there are no trajectories or the project is 30+ days idle;
+    ``dead`` when there are no trajectories or the project is idle for more than 30 days;
     ``stalled`` at 8-30 days; ``active`` within 7 days. A ``None`` day count
     (no activity signal) is treated as ``dead`` unless trajectories exist, in
     which case it is ``stalled`` (present but not recently active).

@@ -82,6 +82,25 @@ def test_assess_stalled(tmp_path: Path) -> None:
     assert h.days_since_activity == 20
 
 
+def test_assess_stalled_dead_boundary(tmp_path: Path) -> None:
+    """The stalled->dead boundary is exercised end-to-end through assess.
+
+    30 days idle is still stalled (<= STALLED_MAX_DAYS); 31 days is dead.
+    This pins the exact boundary at the assess level, not just classify_health.
+    """
+    ai30 = make_project(tmp_path, "edge30", now=NOW, days_ago=30, outcome="max_steps_reached")
+    with mock.patch.object(health, "count_open_issues", return_value=0):
+        h30 = health.assess("edge30", ai30, now=NOW)
+    assert h30.health == "stalled"
+    assert h30.days_since_activity == 30
+
+    ai31 = make_project(tmp_path, "edge31", now=NOW, days_ago=31, outcome="max_steps_reached")
+    with mock.patch.object(health, "count_open_issues", return_value=0):
+        h31 = health.assess("edge31", ai31, now=NOW)
+    assert h31.health == "dead"
+    assert h31.days_since_activity == 31
+
+
 def test_count_open_issues_no_repo() -> None:
     """count_open_issues returns 0 when no repo is given."""
     assert health.count_open_issues(None) == 0
@@ -209,3 +228,59 @@ def test_project_health_now_default(tmp_path: Path) -> None:
     # Verify assess was called without a 'now' keyword argument.
     _, kwargs = m.call_args
     assert "now" not in kwargs
+
+
+# --- project_health classification tests (TICKET-012) ---
+#
+# project_health does not take a `now` argument, so it delegates to assess with
+# the real UTC clock. To pin the classification deterministically we patch
+# health.datetime.now to return the fixed NOW reference.
+
+
+class _FakeDatetime(datetime):
+    """A datetime subclass whose .now() is pinned to NOW.
+
+    Inheriting from the real datetime keeps .fromtimestamp() (used by
+    _last_activity) working; only the clock is frozen.
+    """
+
+    @classmethod
+    def now(cls, tz=None):  # noqa: ARG003 - tz ignored, we always return UTC NOW
+        return NOW
+
+
+def _patched_now():
+    """Patch health.datetime so .now() returns the fixed NOW reference."""
+    return mock.patch.object(health, "datetime", _FakeDatetime)
+
+
+def test_project_health_active(tmp_path: Path) -> None:
+    """project_health drives an active project to health == 'active'."""
+    ai = make_project(tmp_path, "activeproj", now=NOW, days_ago=1, outcome="exit:task_complete")
+    with mock.patch.object(health, "count_open_issues", return_value=0), _patched_now():
+        h = health.project_health(ai)
+    assert h.name == "activeproj"
+    assert h.health == "active"
+    assert h.days_since_activity == 1
+
+
+def test_project_health_stalled(tmp_path: Path) -> None:
+    """project_health drives a 20-day-idle project to health == 'stalled'."""
+    ai = make_project(tmp_path, "stalledproj", now=NOW, days_ago=20, outcome="max_steps_reached")
+    with mock.patch.object(health, "count_open_issues", return_value=0), _patched_now():
+        h = health.project_health(ai)
+    assert h.name == "stalledproj"
+    assert h.health == "stalled"
+    assert h.days_since_activity == 20
+
+
+def test_project_health_dead(tmp_path: Path) -> None:
+    """project_health drives a no-trajectory project to health == 'dead'."""
+    proj = tmp_path / "deadproj"
+    ai = proj / "ai"
+    ai.mkdir(parents=True)
+    (ai / "cycle-001-gate.md").write_text("## Cycle 1: x\n", encoding="utf-8")
+    with mock.patch.object(health, "count_open_issues", return_value=0), _patched_now():
+        h = health.project_health(ai)
+    assert h.name == "deadproj"
+    assert h.health == "dead"
