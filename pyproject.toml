@@ -21,9 +21,9 @@ fleet = "fleet.cli:main"
 [tool.setuptools]
 packages = ["fleet"]
 
-[tool.pytest]
+[tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = ["-q"]
 
 [tool.ruff]
 line-length = 100
