@@ -79,3 +79,77 @@ def test_integration_discover_feeds_assess(tmp_path: Path) -> None:
     names = [ln.split("|")[1].strip() for ln in md.splitlines()[2:]]
     # Most-recent first: alpha (1d), beta (20d), gamma (40d).
     assert names == ["alpha", "beta", "gamma"]
+
+
+def _build_mixed_root(root: Path) -> None:
+    """Build a mixed root: a healthy project, a corrupt-JSON project, and a gate-only project.
+
+    - ``healthy``  — 3 trajectories, active (1 day).
+    - ``corrupt``  — one corrupt + one good trajectory, active (1 day).
+    - ``gateonly`` — a gate log with a red-gate cycle block, no trajectories (dead).
+    """
+    make_project(root, "healthy", now=NOW, days_ago=1, n_traj=3, outcome="exit:task_complete")
+
+    # corrupt: a corrupt JSON plus a good one; only the good one parses.
+    corrupt_ai = make_project(
+        root, "corrupt", now=NOW, days_ago=1, n_traj=1, outcome="max_steps_reached"
+    )
+    (corrupt_ai / "trajectories" / "bad.json").write_text("{not valid json", encoding="utf-8")
+
+    # gateonly: a gate log with a red-gate cycle block, no trajectories.
+    gateonly_ai = root / "gateonly" / "ai"
+    gateonly_ai.mkdir(parents=True)
+    gateonly_ai.joinpath("cycle-001-gate.md").write_text(
+        "## Build Order\n\n"
+        "| Phase | Cycles | Target |\n"
+        "|---|---|---|\n"
+        "| Foundations | 1 | core |\n\n"
+        "## Cycle 1: Pending\n\n"
+        "### Results\n\n"
+        "| Check | Before | After |\n"
+        "|---|---|---|\n"
+        "| Gate (build+test+lint) | red | red |\n"
+        "| Merged on main | — | — |\n",
+        encoding="utf-8",
+    )
+    import os
+
+    os.utime(gateonly_ai / "cycle-001-gate.md", (NOW.timestamp(), NOW.timestamp()))
+
+
+def test_integration_mixed_root_pipeline(tmp_path: Path) -> None:
+    """A mixed root (healthy + corrupt-JSON + gate-only) flows through discover->assess->render.
+
+    The corrupt-JSON project is still discovered and assessed (its good file
+    parses); the gate-only project is discovered, assessed as dead, and its
+    outcome is derived from the gate log. The full table renders without error.
+    """
+    _build_mixed_root(tmp_path)
+    projects = discover.discover(tmp_path)
+    assert sorted(p.name for p in projects) == ["corrupt", "gateonly", "healthy"]
+
+    with mock.patch.object(health, "count_open_issues", side_effect=_issues):
+        assessed = [
+            health.assess(p.name, p.ai_dir, repo=f"owner/{p.name}", now=NOW) for p in projects
+        ]
+    by_name = {h.name: h for h in assessed}
+
+    # healthy: 3 trajectories, active, its outcome.
+    assert by_name["healthy"].health == "active"
+    assert by_name["healthy"].last_cycle == 3
+    assert by_name["healthy"].last_outcome == "exit:task_complete"
+
+    # corrupt: only the good file parses -> 1 trajectory, active, its outcome.
+    assert by_name["corrupt"].health == "active"
+    assert by_name["corrupt"].last_cycle == 1
+    assert by_name["corrupt"].last_outcome == "max_steps_reached"
+
+    # gateonly: no trajectories -> dead; outcome derived from the red gate block.
+    assert by_name["gateonly"].health == "dead"
+    assert by_name["gateonly"].last_cycle == 1
+    assert by_name["gateonly"].last_outcome == "gate:red"
+
+    # The full table renders all three rows without error.
+    md = report.render_portfolio(assessed)
+    names = [ln.split("|")[1].strip() for ln in md.splitlines()[2:]]
+    assert sorted(names) == ["corrupt", "gateonly", "healthy"]
