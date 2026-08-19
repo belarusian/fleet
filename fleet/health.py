@@ -247,3 +247,27 @@ def assess(
         health=health,
         last_activity=last_activity,
     )
+
+
+def project_health(ai_dir: str | Path, repo_path: str | None = None) -> ProjectHealth:
+    """Thin wrapper around :func:`assess` for API parity.
+
+    Derives the project name from ``ai_dir.parent.name`` and delegates to
+    :func:`assess` with the current UTC time as ``now``.
+
+    Parameters
+    ----------
+    ai_dir:
+        The project's ``ai/`` directory. The parent directory's name is used
+        as the project name.
+    repo_path:
+        Optional GitHub ``owner/repo`` for the open-issue lookup.
+
+    Returns
+    -------
+    ProjectHealth
+        The health metrics for the project.
+    """
+    ai = Path(ai_dir).expanduser()
+    name = ai.parent.name
+    return assess(name, ai, repo=repo_path)

@@ -178,3 +178,34 @@ def test_health_last_outcome_follows_mtime(tmp_path: Path) -> None:
     # p0 is newer by mtime, so its outcome wins even though p1 has the higher name.
     assert h.last_outcome == "exit:task_complete"
     assert h.days_since_activity == 1
+
+
+# --- project_health wrapper tests ---
+
+
+def test_project_health_name_derivation(tmp_path: Path) -> None:
+    """project_health derives the name from ai_dir.parent.name."""
+    ai = make_project(tmp_path, "myproj", now=NOW, days_ago=1)
+    with mock.patch.object(health, "count_open_issues", return_value=0):
+        h = health.project_health(ai)
+    assert h.name == "myproj"
+
+
+def test_project_health_repo_passthrough(tmp_path: Path) -> None:
+    """project_health passes repo_path through to assess."""
+    ai = make_project(tmp_path, "myproj", now=NOW, days_ago=1)
+    with mock.patch.object(health, "count_open_issues", return_value=7) as m:
+        h = health.project_health(ai, repo_path="owner/myproj")
+    m.assert_called_once_with("owner/myproj")
+    assert h.open_issues == 7
+
+
+def test_project_health_now_default(tmp_path: Path) -> None:
+    """project_health does not pass a now kwarg, so assess defaults to UTC now."""
+    ai = make_project(tmp_path, "myproj", now=NOW, days_ago=1)
+    with mock.patch.object(health, "assess", wraps=health.assess) as m:
+        with mock.patch.object(health, "count_open_issues", return_value=0):
+            health.project_health(ai)
+    # Verify assess was called without a 'now' keyword argument.
+    _, kwargs = m.call_args
+    assert "now" not in kwargs
