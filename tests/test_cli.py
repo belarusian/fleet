@@ -465,3 +465,66 @@ def test_cli_version_flag_prints_exact_version(capsys) -> None:
 def test_cli_version_is_0_1_0() -> None:
     """The shipped version is pinned to 0.1.0 (first release)."""
     assert __version__ == "0.1.0"
+
+
+# ---------------------------------------------------------------------------
+# TICKET-051: `python3 -m fleet` works via fleet/__main__.py
+# ---------------------------------------------------------------------------
+
+
+def test_python_m_fleet_help_exits_zero(tmp_path: Path) -> None:
+    """``python3 -m fleet --help`` exits 0 from a neutral directory.
+
+    Runs the package as a script module from a tmp_path (not the repo root)
+    with PYTHONPATH pointing at the repo root, so the test exercises real
+    package resolution rather than the ambient cwd. Asserts returncode == 0
+    and that the help text mentions the ``status`` subcommand.
+    """
+    import os
+    import subprocess
+    import sys
+
+    repo_root = Path(__file__).resolve().parent.parent
+    env = dict(os.environ)
+    # Prepend the repo root so `fleet` is importable from a neutral cwd.
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(repo_root) + (os.pathsep + existing if existing else "")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "fleet", "--help"],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert "status" in result.stdout
+
+
+def test_python_m_fleet_version_exits_zero_and_prints_version(tmp_path: Path) -> None:
+    """``python3 -m fleet --version`` exits 0 and prints the version.
+
+    Exercises the ``sys.exit(main())`` path in ``fleet/__main__.py`` with
+    argparse's ``action="version"`` (which raises ``SystemExit(0)`` rather
+    than returning), from a neutral tmp_path with PYTHONPATH set to the repo
+    root. Asserts returncode == 0 and that stdout is exactly
+    ``fleet <__version__>``.
+    """
+    import os
+    import subprocess
+    import sys
+
+    repo_root = Path(__file__).resolve().parent.parent
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(repo_root) + (os.pathsep + existing if existing else "")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "fleet", "--version"],
+        cwd=str(tmp_path),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, f"stderr: {result.stderr}"
+    assert result.stdout.strip() == f"fleet {__version__}"
