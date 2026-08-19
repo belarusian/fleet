@@ -76,13 +76,62 @@ def _last_activity(ai_dir: Path) -> datetime | None:
     return datetime.fromtimestamp(latest, tz=timezone.utc)
 
 
+def _gate_log_outcome(run: fourseer.Run) -> str | None:
+    """Derive a short outcome string from the gate log's last cycle block.
+
+    Used only when neither ``cycles.out`` nor a trajectory records an outcome
+    (e.g. a project that stores only its gate log). The highest-numbered
+    ``CycleBlock`` is mapped to a compact label:
+
+    - ``gate_after == "green"`` -> ``"gate:green"``
+    - ``gate_after == "red"``   -> ``"gate:red"``
+    - else ``merged is True``   -> ``"merged"``
+    - else ``merged is False``  -> ``"not-merged"``
+    - else (no Results table)   -> ``None``
+    """
+    if not run.gate_log.cycles:
+        return None
+    block = max(run.gate_log.cycles, key=lambda b: b.cycle_no)
+    if block.gate_after == "green":
+        return "gate:green"
+    if block.gate_after == "red":
+        return "gate:red"
+    if block.merged is True:
+        return "merged"
+    if block.merged is False:
+        return "not-merged"
+    return None
+
+
+def _newest_trajectory_outcome(ai_dir: Path, run: fourseer.Run) -> str | None:
+    """Return the outcome of the most-recently-active trajectory.
+
+    Consistent with :func:`_last_activity`, "most recent" is decided by the
+    source file's mtime (not filename order), so a renamed or out-of-order
+    trajectory file cannot make the reported outcome stale. Falls back to the
+    last trajectory in load order when no source file is present on disk.
+    """
+    if not run.trajectories:
+        return None
+    traj_dir = ai_dir / "trajectories"
+    best: tuple[float, str | None] | None = None
+    for t in run.trajectories:
+        path = traj_dir / t.name if t.name else None
+        mtime = path.stat().st_mtime if path is not None and path.is_file() else 0.0
+        if best is None or mtime > best[0]:
+            best = (mtime, t.outcome)
+    return best[1] if best is not None else None
+
+
 def _last_cycle_and_outcome(ai_dir: Path) -> tuple[int | None, str | None]:
     """Extract the last cycle number and last outcome for *ai_dir*.
 
     The last cycle number is the maximum cycle number seen in ``cycles.out``
     or the gate log; when neither records a cycle it falls back to the number
-    of trajectories. The last outcome is the outcome of the highest-numbered
-    cycle (from ``cycles.out``), else the last trajectory's outcome.
+    of trajectories. The last outcome is, in priority order: the
+    highest-numbered ``cycles.out`` cycle's outcome, else the most-recently
+    active trajectory's outcome (by mtime), else a label derived from the gate
+    log's last cycle block.
     """
     run = fourseer.load_run(ai_dir)
 
@@ -98,9 +147,10 @@ def _last_cycle_and_outcome(ai_dir: Path) -> tuple[int | None, str | None]:
     if run.cycles:
         top = max(run.cycles, key=lambda c: c.cycle_no)
         last_outcome = top.outcome
-    if last_outcome is None and run.trajectories:
-        # Trajectories load in sorted filename order; the last is the newest.
-        last_outcome = run.trajectories[-1].outcome
+    if last_outcome is None:
+        last_outcome = _newest_trajectory_outcome(ai_dir, run)
+    if last_outcome is None:
+        last_outcome = _gate_log_outcome(run)
 
     return last_cycle, last_outcome
 

@@ -103,3 +103,78 @@ def test_count_open_issues_counts_lines() -> None:
     proc = mock.Mock(returncode=0, stdout="1\topen\ttitle\n2\topen\ttitle2\n")
     with mock.patch.object(health.subprocess, "run", return_value=proc):
         assert health.count_open_issues("owner/repo") == 2
+
+
+def test_health_gate_log_outcome(tmp_path: Path) -> None:
+    """A gate-only project derives last_outcome from the gate log's last block."""
+    proj = tmp_path / "gated"
+    ai = proj / "ai"
+    ai.mkdir(parents=True)
+    (ai / "cycle-001-gate.md").write_text(
+        "## Cycle 1: Foundations\n"
+        "**Date:** 2025-06-01\n"
+        "### Results\n"
+        "| Check | Before | After |\n"
+        "|---|---|---|\n"
+        "| Gate (build+test+lint) | red | green |\n"
+        "| Merged on main | - | abc1234 |\n",
+        encoding="utf-8",
+    )
+    with mock.patch.object(health, "count_open_issues", return_value=0):
+        h = health.assess("gated", ai, now=NOW)
+    assert h.last_cycle == 1
+    assert h.last_outcome == "gate:green"
+    assert h.health == "dead"  # no trajectories
+
+
+def test_health_gate_log_merged_only(tmp_path: Path) -> None:
+    """A gate log with a merged row but no gate row maps to 'merged'."""
+    proj = tmp_path / "gated2"
+    ai = proj / "ai"
+    ai.mkdir(parents=True)
+    (ai / "cycle-001-gate.md").write_text(
+        "## Cycle 2: More\n"
+        "### Results\n"
+        "| Check | Before | After |\n"
+        "|---|---|---|\n"
+        "| Merged on main | - | def5678 |\n",
+        encoding="utf-8",
+    )
+    with mock.patch.object(health, "count_open_issues", return_value=0):
+        h = health.assess("gated2", ai, now=NOW)
+    assert h.last_cycle == 2
+    assert h.last_outcome == "merged"
+
+
+def test_health_gate_log_missing_stays_none(tmp_path: Path) -> None:
+    """A gate log with no Results table keeps last_outcome None."""
+    proj = tmp_path / "gated3"
+    ai = proj / "ai"
+    ai.mkdir(parents=True)
+    (ai / "cycle-001-gate.md").write_text("## Cycle 1: x\n", encoding="utf-8")
+    with mock.patch.object(health, "count_open_issues", return_value=0):
+        h = health.assess("gated3", ai, now=NOW)
+    assert h.last_cycle == 1
+    assert h.last_outcome is None
+
+
+def test_health_last_outcome_follows_mtime(tmp_path: Path) -> None:
+    """last_outcome comes from the newest-mtime trajectory, not filename order."""
+    import json
+    import os
+
+    proj = tmp_path / "beta"
+    ai = proj / "ai"
+    (ai / "trajectories").mkdir(parents=True)
+    p0 = ai / "trajectories" / "trajectory_0000.json"
+    p1 = ai / "trajectories" / "trajectory_0001.json"
+    p0.write_text(json.dumps({"outcome": "exit:task_complete", "messages": []}), encoding="utf-8")
+    p1.write_text(json.dumps({"outcome": "max_steps_reached", "messages": []}), encoding="utf-8")
+    # Make the higher-numbered file OLDER so filename order and mtime disagree.
+    os.utime(p0, (NOW.timestamp() - 86400, NOW.timestamp() - 86400))
+    os.utime(p1, (NOW.timestamp() - 86400 * 5, NOW.timestamp() - 86400 * 5))
+    with mock.patch.object(health, "count_open_issues", return_value=0):
+        h = health.assess("beta", ai, now=NOW)
+    # p0 is newer by mtime, so its outcome wins even though p1 has the higher name.
+    assert h.last_outcome == "exit:task_complete"
+    assert h.days_since_activity == 1
