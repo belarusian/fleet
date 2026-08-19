@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "fleet" }]
-dependencies = []
+dependencies = [
+    "fourseer @ git+https://github.com/belarusian/fourseer.git@b03356a1b407ad8412f62e953bff3b326cb9baa2",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "ruff>=0.1.0", "mypy>=1.0"]
