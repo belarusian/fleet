@@ -20,6 +20,11 @@ classification:
 
 Output is a markdown table sorted by last-activity descending.
 
+> **Note:** the `open_issues` column is always `0` in CLI output. The CLI has
+> no project -> `owner/repo` mapping, so it never resolves a repo for the `gh`
+> lookup. Programmatic callers can pass `repo` to `fleet.health.assess` /
+> `fleet.health.project_health` to get real `gh`-backed counts.
+
 Stdlib-first; the only dependency is the `fourseer` package.
 
 ## Development

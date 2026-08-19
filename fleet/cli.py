@@ -86,7 +86,14 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _assess_all(root: str) -> list[health_mod.ProjectHealth]:
-    """Discover projects under *root* and assess each one."""
+    """Discover projects under *root* and assess each one.
+
+    Note: the CLI passes no ``repo`` to :func:`fleet.health.assess`, so the
+    ``open_issues`` column is always ``0`` in CLI output. The discovery layer
+    has no project -> ``owner/repo`` mapping; programmatic callers can pass
+    ``repo`` to :func:`fleet.health.assess` / :func:`fleet.health.project_health`
+    to get real ``gh``-backed counts.
+    """
     projects = discover.discover(root)
     return [health_mod.assess(p.name, p.ai_dir) for p in projects]
 
