@@ -11,7 +11,7 @@ classification:
 
 - **active** — ran within 7 days
 - **stalled** — 8-30 days
-- **dead** — 30+ days or no trajectories
+- **dead** — more than 30 days or no trajectories
 
 ## CLI
 
