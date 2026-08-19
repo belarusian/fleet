@@ -9,11 +9,13 @@ lookup is patched so the output is deterministic.
 
 from __future__ import annotations
 
+import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from fleet import cli, health, report
+from fleet import cli, health, report, snapshot
 from tests._fixtures import make_project
 
 NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -121,3 +123,122 @@ def test_cli_status_filter_all(tmp_path: Path, capsys) -> None:
     assert out == report.render_portfolio(assessed) + "\n"
     for name in ("alpha", "beta", "gamma"):
         assert name in out
+
+
+# ---------------------------------------------------------------------------
+# CLI `diff` subcommand
+# ---------------------------------------------------------------------------
+
+
+def _assess_root_no_repo(root: Path) -> list[health.ProjectHealth]:
+    """Assess every discovered project exactly as the CLI does (no repo).
+
+    The CLI's ``_assess_all`` calls ``assess(name, ai_dir)`` with no ``repo``,
+    so ``count_open_issues(None)`` returns 0 for every row. Mirroring that
+    (omitting ``repo``) keeps the expected diff identical to what ``diff``
+    prints — passing a repo would make the open-issue column diverge.
+    """
+    from fleet import discover
+
+    projects = discover.discover(root)
+    with mock.patch.object(health, "count_open_issues", side_effect=_issues):
+        return [health.assess(p.name, p.ai_dir, now=NOW) for p in projects]
+
+
+def _run_diff(root: Path, snap_path: Path, capsys) -> tuple[int, str, str]:
+    """Run ``fleet diff --root <root> --snapshot <snap>``; return (rc, out, err)."""
+    argv = ["diff", "--root", str(root), "--snapshot", str(snap_path)]
+    with mock.patch.object(health, "count_open_issues", side_effect=_issues), mock.patch.object(
+        health, "datetime", _FakeDatetime
+    ):
+        rc = cli.main(argv)
+    out, err = capsys.readouterr()
+    return rc, out, err
+
+
+def test_cli_diff_missing_snapshot(tmp_path: Path, capsys) -> None:
+    """A missing --snapshot file exits 2 with a message on stderr."""
+    _build_root(tmp_path)
+    missing = tmp_path / "does-not-exist.json"
+    rc, out, err = _run_diff(tmp_path, missing, capsys)
+    assert rc == 2
+    assert "snapshot not found" in err
+    assert str(missing) in err
+    assert out == ""
+
+
+def test_cli_diff_matches_render_diff(tmp_path: Path, capsys) -> None:
+    """diff stdout equals render_diff(snapshot_diff(snap, current))."""
+    _build_root(tmp_path)
+    # Save a snapshot of the current (unmutated) portfolio.
+    snap_path = snapshot.save_snapshot(_assess_root_no_repo(tmp_path), tmp_path / "snap.json")
+    # Mutate the root so the diff is non-trivial: add a project, remove one,
+    # and change one project's outcome.
+    make_project(tmp_path, "delta", now=NOW, days_ago=2, n_traj=2, outcome="exit:task_complete")
+    shutil.rmtree(tmp_path / "gamma")
+    (tmp_path / "beta" / "ai" / "trajectories" / "trajectory_0000.json").write_text(
+        json.dumps({"outcome": "timeout", "messages": []}), encoding="utf-8"
+    )
+
+    current = _assess_root_no_repo(tmp_path)
+    snap = snapshot.load_snapshot(snap_path)
+    expected = snapshot.render_diff(snapshot.snapshot_diff(snap, current))
+
+    rc, out, err = _run_diff(tmp_path, snap_path, capsys)
+    assert rc == 0
+    assert err == ""
+    assert out == expected + "\n"
+
+
+def test_cli_diff_exercises_all_row_kinds(tmp_path: Path, capsys) -> None:
+    """A snapshot/current pair yields added, removed, changed, unchanged rows."""
+    _build_root(tmp_path)
+    snap_path = snapshot.save_snapshot(_assess_root_no_repo(tmp_path), tmp_path / "snap.json")
+    # Add 'delta' (added), remove 'gamma' (removed), change 'beta' outcome
+    # (changed); leave 'alpha' untouched (unchanged).
+    make_project(tmp_path, "delta", now=NOW, days_ago=2, n_traj=2, outcome="exit:task_complete")
+    shutil.rmtree(tmp_path / "gamma")
+    (tmp_path / "beta" / "ai" / "trajectories" / "trajectory_0000.json").write_text(
+        json.dumps({"outcome": "timeout", "messages": []}), encoding="utf-8"
+    )
+
+    current = _assess_root_no_repo(tmp_path)
+    snap = snapshot.load_snapshot(snap_path)
+    rows = snapshot.snapshot_diff(snap, current)
+    by = {r.name: r for r in rows}
+
+    assert by["delta"].status == "added"
+    assert by["gamma"].status == "removed"
+    assert by["beta"].status == "changed"
+    assert "outcome" in by["beta"].detail
+    assert by["alpha"].status == "unchanged"
+    # Rows are sorted by name.
+    assert [r.name for r in rows] == sorted(by)
+
+    rc, out, err = _run_diff(tmp_path, snap_path, capsys)
+    assert rc == 0
+    assert err == ""
+    # render_diff drops the unchanged 'alpha' row.
+    assert "alpha" not in out
+    assert "| delta | added |" in out
+    assert "| gamma | removed |" in out
+    assert "| beta | changed |" in out
+
+
+def test_cli_diff_no_changes(tmp_path: Path, capsys) -> None:
+    """An unchanged portfolio renders the single '(no changes)' row."""
+    _build_root(tmp_path)
+    snap_path = snapshot.save_snapshot(_assess_root_no_repo(tmp_path), tmp_path / "snap.json")
+
+    rc, out, err = _run_diff(tmp_path, snap_path, capsys)
+    assert rc == 0
+    assert err == ""
+    assert "| (no changes) | - | - |" in out
+
+
+def test_cli_diff_snapshot_default_is_snapshot_json() -> None:
+    """The --snapshot parser default is 'snapshot.json'."""
+    parser = cli._build_parser()
+    args = parser.parse_args(["diff", "--root", "/tmp/whatever"])
+    assert args.snapshot == "snapshot.json"
+    assert args.root == "/tmp/whatever"
