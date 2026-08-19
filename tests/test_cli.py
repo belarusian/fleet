@@ -9,11 +9,14 @@ lookup is patched so the output is deterministic.
 
 from __future__ import annotations
 
+import argparse
 import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 from fleet import cli, health, report, snapshot
 from tests._fixtures import make_project
@@ -374,3 +377,55 @@ def test_cli_open_issues_always_zero(tmp_path: Path, capsys) -> None:
         cols = [c.strip() for c in row.split("|") if c.strip()]
         # cols: [name, cycle, outcome, days, open_issues, health]
         assert cols[4] == "0", f"Expected open_issues=0 in row: {row}"
+
+
+# ---------------------------------------------------------------------------
+# CLI surface guard (TICKET-042): pins the registered subcommands and that
+# each subcommand's --help works. Catches a removed/renamed subcommand.
+# ---------------------------------------------------------------------------
+
+
+def _run_help(argv: list[str], capsys) -> str:
+    """Run ``cli.main(argv)`` expecting argparse ``--help`` (SystemExit 0).
+
+    Returns the captured stdout. ``--help`` short-circuits before any command
+    runs, so no root/~/AI is touched and no mocking is needed.
+    """
+    with pytest.raises(SystemExit) as exc:
+        cli.main(argv)
+    assert exc.value.code == 0
+    return capsys.readouterr().out
+
+
+def test_cli_top_level_help_lists_all_subcommands(capsys) -> None:
+    """``fleet --help`` lists all three subcommands: status, snapshot, diff."""
+    out = _run_help(["--help"], capsys)
+    for name in ("status", "snapshot", "diff"):
+        assert name in out
+
+
+def test_cli_registered_subcommands_are_exactly_three() -> None:
+    """The parser registers exactly {status, snapshot, diff} — no more, no less."""
+    parser = cli._build_parser()
+    sub = next(
+        a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
+    )
+    assert set(sub.choices) == {"status", "snapshot", "diff"}
+
+
+def test_cli_status_help_shows_filter(capsys) -> None:
+    """``status --help`` exits 0 and shows the --filter option."""
+    out = _run_help(["status", "--help"], capsys)
+    assert "--filter" in out
+
+
+def test_cli_snapshot_help_shows_snapshot(capsys) -> None:
+    """``snapshot --help`` exits 0 and shows the --snapshot option."""
+    out = _run_help(["snapshot", "--help"], capsys)
+    assert "--snapshot" in out
+
+
+def test_cli_diff_help_shows_snapshot(capsys) -> None:
+    """``diff --help`` exits 0 and shows the --snapshot option."""
+    out = _run_help(["diff", "--help"], capsys)
+    assert "--snapshot" in out
