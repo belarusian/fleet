@@ -8,3 +8,8 @@ build/
 .ruff_cache/
 *.egg-info/
 trajectories/
+
+# Re-include the committed example trajectories (the broad trajectories/ rule above
+# is meant to ignore real ~/AI artifacts, not the small self-contained examples/ tree).
+!examples/*/ai/trajectories/
+!examples/*/ai/trajectories/*.json

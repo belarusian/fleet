@@ -1,0 +1,6 @@
+========== CYCLE 1  10:00:00Z ==========
+OUTER trajectory saved to: /examples/beta/ai/trajectories/trajectory_0000.json
+OUTER outcome: max_steps_reached
+========== CYCLE 2  11:00:00Z ==========
+OUTER trajectory saved to: /examples/beta/ai/trajectories/trajectory_0001.json
+OUTER outcome: exit:task_complete
