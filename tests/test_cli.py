@@ -341,3 +341,36 @@ def test_cli_snapshot_default_is_snapshot_json() -> None:
     args = parser.parse_args(["snapshot", "--root", "/tmp/whatever"])
     assert args.snapshot == "snapshot.json"
     assert args.root == "/tmp/whatever"
+
+
+# ---------------------------------------------------------------------------
+# TICKET-028: open_issues is always 0 in CLI output (no repo mapping)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_open_issues_always_zero(tmp_path: Path, capsys) -> None:
+    """CLI output always shows 0 open issues because no repo is passed.
+
+    The CLI's _assess_all calls assess(name, ai_dir) without a repo argument.
+    assess defaults repo=None, and count_open_issues(None) returns 0 via its
+    guard clause (health.py: if not repo: return 0). This test verifies the
+    end-to-end behavior: the Open Issues column is 0 for every row.
+    """
+    _build_root(tmp_path)
+    # Do NOT patch count_open_issues — it will be called with None and return 0
+    # via the guard clause without invoking subprocess.
+    with mock.patch.object(health, "datetime", _FakeDatetime):
+        rc = cli.main(["status", "--root", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Each data row has the form: | name | cycle | outcome | days | 0 | health |
+    # Verify the open-issues column (5th) is 0 in every data row.
+    lines = out.strip().splitlines()
+    data_rows = [
+        ln for ln in lines if ln.startswith("|") and "---" not in ln and "Project" not in ln
+    ]
+    assert len(data_rows) == 3  # alpha, beta, gamma
+    for row in data_rows:
+        cols = [c.strip() for c in row.split("|") if c.strip()]
+        # cols: [name, cycle, outcome, days, open_issues, health]
+        assert cols[4] == "0", f"Expected open_issues=0 in row: {row}"
