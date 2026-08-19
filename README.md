@@ -7,11 +7,29 @@ and emits a one-page portfolio status table. For each project it discovers
 (any subdir containing an `ai/` with trajectories or a gate log), it uses the
 `fourseer` parsers to extract: last cycle number, last outcome, days since
 last activity, open issue count (from `gh` if available, else 0), and a health
-classification:
+classification.
 
-- **active** — ran within 7 days
-- **stalled** — 8-30 days
-- **dead** — more than 30 days or no trajectories
+## How it works
+
+The portfolio table is produced by a four-stage pipeline:
+
+1. **discover** (`fleet.discover.discover`) scans the root for project `ai/`
+   directories at depth ≤ 2 that hold trajectories or a gate log.
+2. **assess** (`fleet.health.assess` / `project_health`) extracts per-project
+   metrics via the `fourseer` parsers: last cycle, last outcome, days since
+   activity, and open issues.
+3. **classify** (`fleet.health.classify_health`) maps those metrics to a health
+   label: `active`, `stalled`, or `dead`.
+4. **render** (`fleet.report.render_portfolio`) emits the markdown table,
+   sorted by last-activity descending (no-activity last).
+
+## Health classification
+
+| Health     | Condition |
+|------------|-----------|
+| **active**   | has trajectories AND ≤ 7 days since activity |
+| **stalled**  | has trajectories AND 8-30 days, OR has trajectories but no activity signal |
+| **dead**     | no trajectories, OR > 30 days since activity |
 
 ## CLI
 
@@ -40,6 +58,21 @@ The three subcommands compose into a drift-detection loop:
 2. `snapshot` saves that portfolio as a JSON baseline.
 3. `diff` compares the next run against the baseline and reports what was
    added, removed, or changed.
+
+## Example
+
+The repo ships a small, self-contained example tree under `examples/` (the
+directory itself is the scan root). Point `fleet` at it to see real output:
+
+    fleet status --root examples/
+
+The same drift loop works against it:
+
+    fleet snapshot --root examples/ --snapshot baseline.json
+    fleet diff     --root examples/ --snapshot baseline.json
+
+> **Note:** health is mtime-based, so a freshly-checked-out tree shows recent
+> activity (every example project reports `active` right after a clone).
 
 > **Note:** the `open_issues` column is always `0` in CLI output. The CLI has
 > no project -> `owner/repo` mapping, so it never resolves a repo for the `gh`

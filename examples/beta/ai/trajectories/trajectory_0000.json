@@ -1,0 +1,6 @@
+{
+  "outcome": "max_steps_reached",
+  "messages": [
+    {"role": "assistant", "content": "Ran the report renderer; hit the step budget."}
+  ]
+}
