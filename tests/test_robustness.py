@@ -209,3 +209,66 @@ def test_assess_ai_as_file(tmp_path: Path) -> None:
     assert h.last_outcome is None
     assert h.days_since_activity is None
     assert h.last_activity is None
+
+
+def test_assess_trajectory_missing_outcome_key(tmp_path: Path) -> None:
+    """A trajectory that is valid JSON but has no ``outcome`` key assesses cleanly.
+
+    fourseer's ``load_trajectories`` sets a missing ``outcome`` to ``None``;
+    fleet must report ``last_outcome is None`` gracefully (no crash, no sentinel).
+    """
+    ai = tmp_path / "p" / "ai"
+    (ai / "trajectories").mkdir(parents=True)
+    traj = ai / "trajectories" / "trajectory_0000.json"
+    traj.write_text(json.dumps({"messages": []}), encoding="utf-8")
+    _set_mtime(traj, NOW)
+
+    h = health.assess("p", ai, now=NOW)
+    assert h.health == "active"
+    assert h.last_cycle == 1
+    assert h.last_outcome is None
+    assert h.days_since_activity == 0
+
+
+def test_assess_malformed_cycles_out_header(tmp_path: Path) -> None:
+    """A ``cycles.out`` header with a non-``HH:MM:SSZ`` timestamp is not recorded.
+
+    fourseer's ``_HEADER_RE`` does not match such a line, so the cycle is not
+    recorded and any following ``OUTER`` lines are ignored. fleet must report
+    ``last_cycle is None`` / ``last_outcome is None`` gracefully.
+    """
+    ai = tmp_path / "p" / "ai"
+    ai.mkdir(parents=True)
+    co = ai / "cycles.out"
+    co.write_text(
+        "========== CYCLE 3  not-a-time ==========\n"
+        "OUTER outcome: exit:task_complete\n",
+        encoding="utf-8",
+    )
+    _set_mtime(co, NOW)
+
+    h = health.assess("p", ai, now=NOW)
+    assert h.health == "dead"  # no trajectories
+    assert h.last_cycle is None  # the malformed header was not recorded
+    assert h.last_outcome is None  # the OUTER line was ignored
+    # The file exists on disk, so it contributes an mtime signal.
+    assert h.days_since_activity == 0
+
+
+def test_assess_trajectory_non_string_outcome(tmp_path: Path) -> None:
+    """A trajectory whose ``outcome`` is a non-string is coerced to ``str``.
+
+    fourseer's ``_to_trajectory`` coerces a non-string ``outcome`` to ``str``;
+    fleet must report the coerced string (``42`` -> ``"42"``) gracefully.
+    """
+    ai = tmp_path / "p" / "ai"
+    (ai / "trajectories").mkdir(parents=True)
+    traj = ai / "trajectories" / "trajectory_0000.json"
+    traj.write_text(json.dumps({"outcome": 42, "messages": []}), encoding="utf-8")
+    _set_mtime(traj, NOW)
+
+    h = health.assess("p", ai, now=NOW)
+    assert h.health == "active"
+    assert h.last_cycle == 1
+    assert h.last_outcome == "42"  # coerced to str
+    assert h.days_since_activity == 0
