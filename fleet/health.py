@@ -4,10 +4,29 @@ For each discovered project, :func:`assess` uses the ``fourseer`` parsers to
 extract the last cycle number, the last outcome, days since last activity, the
 open issue count, and a health classification.
 
-Health classification (by days since last activity):
+Two classification schemes coexist:
+
+v1 — :func:`classify_health` (used by :func:`assess`), by days since last
+activity:
   - ``active``  — ran within 7 days
   - ``stalled`` — 8-30 days
   - ``dead``    — more than 30 days, or no trajectories at all
+
+v2 — :func:`classify_health_v2` (a pure function, not yet wired into
+:func:`assess`), four classes, most-severe-wins (stranded > active > paused >
+dead):
+  - ``stranded`` — an unmerged ``build*`` branch OR unpushed commits on
+    ``main``, regardless of recency
+  - ``active``   — touched within 7 days AND work in flight (last outcome
+    ``max_steps_reached``)
+  - ``paused``   — recently touched but done (nothing in flight), or idle in
+    the 8-29 day band with nothing in flight
+  - ``dead``     — 30+ days untouched AND nothing in flight, or no activity
+    signal at all with nothing in flight
+
+The v2 dead boundary is ``days >= DEAD_MIN_DAYS`` (>= 30); the v1 dead boundary
+is ``days > STALLED_MAX_DAYS`` (> 30). They intentionally disagree at exactly
+30 days and must not be unified.
 """
 
 from __future__ import annotations
@@ -19,9 +38,16 @@ from pathlib import Path
 
 import fourseer
 
+from fleet.gittest import GitState
+
 # Day thresholds for the health classification.
 ACTIVE_MAX_DAYS = 7
 STALLED_MAX_DAYS = 30
+# v2 dead boundary: a project untouched for >= DEAD_MIN_DAYS days (and with
+# nothing in flight) is dead. Note the v1 dead boundary is > STALLED_MAX_DAYS
+# (> 30) while the v2 dead boundary is >= DEAD_MIN_DAYS (>= 30) — intentionally
+# different, do not unify them.
+DEAD_MIN_DAYS = 30
 
 # Files under an ai/ dir that count as "activity" for the recency signal.
 _ACTIVITY_GLOBS = ("trajectories/*.json", "cycles*.out", "*gate*.md")
@@ -197,6 +223,66 @@ def classify_health(days: int | None, has_trajectories: bool) -> str:
     if days <= STALLED_MAX_DAYS:
         return "stalled"
     return "dead"
+
+
+def classify_health_v2(
+    days: int | None,
+    last_outcome: str | None,
+    git_state: GitState,
+) -> str:
+    """Classify health into four classes (v2), most-severe-wins.
+
+    A PURE function (no I/O): it derives the class only from *days* (whole days
+    since last activity, or ``None`` when there is no activity signal),
+    *last_outcome* (the last recorded outcome string, or ``None``), and
+    *git_state* (the git-side work-in-flight signal from
+    :func:`fleet.gittest.read_gitstate`).
+
+    The four classes, in decreasing severity (most-severe-wins):
+
+    - ``stranded`` — git work in flight: an unmerged ``build*`` branch OR
+      unpushed commits on ``main``, regardless of recency.
+    - ``active``   — recently touched (<= 7 days) AND work in flight (the last
+      outcome is ``max_steps_reached``; an unmerged branch already -> stranded).
+    - ``paused``   — recently touched but done (nothing in flight), or idle in
+      the 8-29 day band with nothing in flight (benign, not yet dead).
+    - ``dead``     — 30+ days untouched AND nothing in flight, or no activity
+      signal at all (``days is None``) with nothing in flight.
+
+    Only the exact outcome ``"max_steps_reached"`` counts as "work in flight";
+    ``"exit:task_complete"`` and the error outcomes (``execution_error*``,
+    ``repeated_format_error*``) do not.
+
+    Note: the v2 dead boundary is ``days >= DEAD_MIN_DAYS`` (>= 30), whereas the
+    v1 :func:`classify_health` dead boundary is ``days > STALLED_MAX_DAYS``
+    (> 30). The two schemes intentionally disagree at exactly 30 days and must
+    not be unified.
+    """
+    has_unmerged = len(git_state.unmerged_build_branches) > 0
+    has_unpushed = git_state.unpushed_commits > 0
+    outcome_max_steps = last_outcome == "max_steps_reached"
+    in_flight = has_unmerged or has_unpushed or outcome_max_steps
+    recent = days is not None and days <= ACTIVE_MAX_DAYS
+    old = days is not None and days >= DEAD_MIN_DAYS
+
+    # 1. Git work in flight, regardless of recency.
+    if has_unmerged or has_unpushed:
+        return "stranded"
+    # 2. Recently touched AND work in flight (max_steps; unmerged -> stranded).
+    if recent and in_flight:
+        return "active"
+    # 3. Recently touched, nothing in flight.
+    if recent and not in_flight:
+        return "paused"
+    # 4. 30+ days untouched, nothing in flight.
+    if old and not in_flight:
+        return "dead"
+    # 5. Fallbacks (documented above).
+    if in_flight:
+        return "active"  # work in flight (max_steps) but not recent -> still active
+    if days is None:
+        return "dead"  # no activity signal at all, nothing in flight -> abandoned
+    return "paused"  # 8-29 days idle, nothing in flight -> benign, not yet dead
 
 
 def _days_between(now: datetime, then: datetime) -> int:
