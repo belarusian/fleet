@@ -18,12 +18,16 @@ The portfolio table is produced by a four-stage pipeline:
 2. **assess** (`fleet.health.assess` / `project_health`) extracts per-project
    metrics via the `fourseer` parsers: last cycle, last outcome, days since
    activity, and open issues.
-3. **classify** (`fleet.health.classify_health`) maps those metrics to a health
-   label: `active`, `stalled`, or `dead`.
+3. **classify** (`fleet.health.classify_health`) maps those metrics to a v1
+   health label: `active`, `stalled`, or `dead`. A second, git-aware scheme
+   (`fleet.health.classify_health_v2`) classifies into four classes
+   (`stranded` / `active` / `paused` / `dead`) — see below.
 4. **render** (`fleet.report.render_portfolio`) emits the markdown table,
    sorted by last-activity descending (no-activity last).
 
-## Health classification
+## Health classification (v1)
+
+`classify_health` is the recency-only scheme used by the `Health` column:
 
 | Health     | Condition |
 |------------|-----------|
@@ -31,18 +35,46 @@ The portfolio table is produced by a four-stage pipeline:
 | **stalled**  | has trajectories AND 8-30 days, OR has trajectories but no activity signal |
 | **dead**     | no trajectories, OR > 30 days since activity |
 
+## Health classification (v2)
+
+`classify_health_v2(days, last_outcome, git_state)` is a pure, git-aware scheme
+with **four classes**, resolved **most-severe-wins**
+(`stranded` > `active` > `paused` > `dead`). "Work in flight" means an unmerged
+`build*` branch, unpushed commits on `main`, or a last outcome of exactly
+`max_steps_reached` (no other outcome counts as in-flight).
+
+| Health       | Condition |
+|--------------|-----------|
+| **stranded** | an unmerged `build*` branch OR unpushed commits on `main`, regardless of recency (git work in flight) |
+| **active**   | touched ≤ 7 days AND work in flight (last outcome `max_steps_reached`; an unmerged branch already → `stranded`) |
+| **paused**   | recently touched but done (nothing in flight), or idle in the 8-29 day band with nothing in flight |
+| **dead**     | 30+ days untouched AND nothing in flight, or no activity signal at all with nothing in flight |
+
+> **v1/v2 30-day boundary divergence.** The two schemes intentionally disagree
+> at exactly 30 days: v1 `dead` is `> 30` days (so 30 days is `stalled`), while
+> v2 `dead` is `>= 30` days (so 30 days is `dead`). They are **not** unified —
+> each is pinned by its own tests. Do not "normalize" one to match the other.
+
 ## CLI
 
-    fleet status   [--root ~/AI] [--filter active|stalled|dead|all]
+    fleet status   [--root ~/AI] [--filter active|stalled|dead|stranded|paused|all]
     fleet snapshot [--root ~/AI] [--snapshot SNAPSHOT]
     fleet diff     [--root ~/AI] [--snapshot SNAPSHOT]
 
 - `status` prints the current portfolio as a markdown table, optionally
-  filtered by health (`active`/`stalled`/`dead`/`all`).
+  filtered by health (`active`/`stalled`/`dead`/`stranded`/`paused`/`all`).
+  The v1 classes (`active`/`stalled`/`dead`) match the `Health` column; the two
+  v2-only classes (`stranded`/`paused`) are selected with the v2 classifier
+  over each project's git state. The table always shows a trailing `Git`
+  column — a compact work-in-flight summary: `unmerged:<branch>` /
+  `unpushed:<n>` / `-` when clean.
 - `snapshot` saves the current portfolio as a snapshot JSON (the baseline that
-  `diff` compares against).
+  `diff` compares against). Each row now stores a `health_v2` field (the v2
+  class computed from the project's git state).
 - `diff` compares the current portfolio against a saved snapshot JSON and
-  prints a markdown diff table.
+  prints a markdown diff table. A v2 transition surfaces as a
+  `health_v2 <a>-><b>` fragment (`-` for `None`). Old v1 snapshots (no
+  `health_v2` key) still load, with `health_v2` defaulting to `None`.
 
 Output is a markdown table sorted by last-activity descending.
 

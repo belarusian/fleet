@@ -20,7 +20,7 @@ from __future__ import annotations
 import os
 import sys
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Bootstrap: make the fourseer seed package importable. fleet's only
 # third-party dependency is fourseer, imported from the seed path. The seed
