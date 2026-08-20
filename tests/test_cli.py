@@ -409,17 +409,26 @@ def test_cli_snapshot_creates_parent_dirs(tmp_path: Path, capsys) -> None:
 
 
 def test_cli_snapshot_then_diff_is_end_to_end(tmp_path: Path, capsys) -> None:
-    """A `snapshot` baseline followed by an unchanged `diff` reports no changes."""
+    """A `snapshot` baseline followed by a `diff` runs end-to-end and surfaces v2.
+
+    The CLI snapshot now carries a computed ``health_v2`` per project (from the
+    git state), while the live ``_assess_all`` rows have ``health_v2=None``.
+    So the diff surfaces a ``health_v2 <class>->-`` transition for every project
+    (the v2 fragment in ``_field_changes`` surfaces any v2 change automatically).
+    """
     _build_root(tmp_path)
     snap_path = tmp_path / "snap.json"
     rc1, _, _ = _run_snapshot(tmp_path, snap_path, capsys)
     assert rc1 == 0
 
-    # Portfolio is unchanged, so diff against the just-saved baseline is empty.
     rc2, out, err = _run_diff(tmp_path, snap_path, capsys)
     assert rc2 == 0
     assert err == ""
-    assert "| (no changes) | - | - |" in out
+    # Each project's v2 class (computed at save time) differs from the live
+    # row's None, so the diff reports a health_v2 transition per project.
+    assert "| alpha | changed | health_v2 paused->- |" in out
+    assert "| beta | changed | health_v2 active->- |" in out
+    assert "| gamma | changed | health_v2 dead->- |" in out
 
 
 def test_cli_snapshot_then_diff_shows_changes(tmp_path: Path, capsys) -> None:

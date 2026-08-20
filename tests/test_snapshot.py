@@ -16,11 +16,14 @@ Covers:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
+from fleet import discover, gittest
+from fleet.gittest import EMPTY_STATE, GitState
 from fleet.health import ProjectHealth
 from fleet.snapshot import (
     DiffRow,
@@ -31,6 +34,7 @@ from fleet.snapshot import (
     save_snapshot,
     snapshot_diff,
 )
+from tests.test_integration_v2 import _assess_v2_root, _build_v2_root
 
 NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -81,6 +85,11 @@ def _row(
         health=health,
         last_activity=last_activity,
     )
+
+
+def _v2_row(name: str = "alpha", *, health_v2: str | None = None, **kw) -> ProjectHealth:
+    """Build a ``ProjectHealth`` with a v2 class (defaults to ``None``)."""
+    return replace(_row(name, **kw), health_v2=health_v2)
 
 
 # ---------------------------------------------------------------------------
@@ -380,3 +389,125 @@ def test_render_diff_empty_detail_renders_dash() -> None:
     rows = [DiffRow(name="alpha", status="changed", detail="")]
     out = render_diff(rows)
     assert "| alpha | changed | - |" in out
+
+
+# ---------------------------------------------------------------------------
+# v2 snapshot shape (Cycle 18)
+# ---------------------------------------------------------------------------
+
+
+def test_snapshot_v2_round_trip(tmp_path: Path) -> None:
+    """save_snapshot(git_states=...) stores a health_v2 per row; load round-trips it.
+
+    The git_states mapping classifies the three rows stranded / paused / dead;
+    the v1 ``health`` field is preserved alongside.
+    """
+    rows = [
+        _row("alpha", days_since_activity=1, last_outcome="max_steps_reached", health="active"),
+        _row("beta", days_since_activity=1, last_outcome="exit:task_complete", health="active"),
+        _row("gamma", days_since_activity=40, last_outcome="timeout", health="dead"),
+    ]
+    gs = {
+        "alpha": GitState(("build42/x",), 2),  # unmerged build branch -> stranded
+        "beta": EMPTY_STATE,  # recent + done -> paused
+        "gamma": EMPTY_STATE,  # 40d + nothing in flight -> dead
+    }
+    path = save_snapshot(rows, tmp_path / "snap.json", git_states=gs)
+    snap = load_snapshot(path)
+
+    by = {h.name: h for h in snap.projects}
+    assert by["alpha"].health_v2 == "stranded"
+    assert by["beta"].health_v2 == "paused"
+    assert by["gamma"].health_v2 == "dead"
+    # The v1 health field is preserved alongside the v2 class.
+    assert by["alpha"].health == "active"
+    assert by["beta"].health == "active"
+    assert by["gamma"].health == "dead"
+
+
+def test_snapshot_v2_none_without_git_states(tmp_path: Path) -> None:
+    """save_snapshot without git_states leaves every health_v2 as None."""
+    rows = [_row("alpha"), _row("beta"), _row("gamma")]
+    path = save_snapshot(rows, tmp_path / "snap.json")
+    snap = load_snapshot(path)
+    assert [h.health_v2 for h in snap.projects] == [None, None, None]
+
+
+def test_snapshot_old_v1_still_loads(tmp_path: Path) -> None:
+    """A hand-written v1 snapshot (no health_v2 key) loads with health_v2=None."""
+    doc = {
+        "created": "2025-06-01T12:00:00+00:00",
+        "projects": [
+            {
+                "name": "alpha",
+                "last_cycle": 5,
+                "last_outcome": "exit:task_complete",
+                "days_since_activity": 1,
+                "open_issues": 3,
+                "health": "active",
+                "last_activity": "2025-06-01T12:00:00+00:00",
+            }
+        ],
+    }
+    p = tmp_path / "v1.json"
+    p.write_text(json.dumps(doc), encoding="utf-8")
+    snap = load_snapshot(p)
+
+    got = snap.projects[0]
+    assert got.health_v2 is None
+    # The other seven fields are intact.
+    assert got.name == "alpha"
+    assert got.last_cycle == 5
+    assert got.last_outcome == "exit:task_complete"
+    assert got.days_since_activity == 1
+    assert got.open_issues == 3
+    assert got.health == "active"
+    assert got.last_activity == NOW
+
+
+def test_snapshot_diff_surfaces_v2_change() -> None:
+    """A v2-class change (same v1 health) is reported as 'changed'."""
+    snap = Snapshot(created=NOW, projects=[_v2_row("alpha", health_v2="stranded")])
+    current = [_v2_row("alpha", health_v2="paused")]
+    rows = snapshot_diff(snap, current)
+    assert rows == [
+        DiffRow(name="alpha", status="changed", detail="health_v2 stranded->paused")
+    ]
+
+
+def test_snapshot_diff_unchanged_when_v2_same() -> None:
+    """Identical rows (same v2 class) are 'unchanged'."""
+    snap = Snapshot(created=NOW, projects=[_v2_row("alpha", health_v2="stranded")])
+    current = [_v2_row("alpha", health_v2="stranded")]
+    rows = snapshot_diff(snap, current)
+    assert rows == [DiffRow(name="alpha", status="unchanged", detail="")]
+
+
+def test_snapshot_diff_v2_none_to_set() -> None:
+    """A None -> class v2 transition renders as 'health_v2 --><class>'."""
+    snap = Snapshot(created=NOW, projects=[_v2_row("alpha", health_v2=None)])
+    current = [_v2_row("alpha", health_v2="stranded")]
+    rows = snapshot_diff(snap, current)
+    assert rows == [
+        DiffRow(name="alpha", status="changed", detail="health_v2 -->stranded")
+    ]
+
+
+def test_snapshot_v2_canary_classes(tmp_path: Path) -> None:
+    """The three canary shapes classify stranded / paused / dead at the snapshot layer.
+
+    Builds the real git-repo fixture root (Cycle 17 pattern), assesses each
+    project, reads the git state, and saves a snapshot carrying the v2 class.
+    """
+    _build_v2_root(tmp_path)
+    projects = discover.discover(tmp_path)
+    git_states = {p.name: gittest.read_gitstate(p.path) for p in projects}
+    assessed = _assess_v2_root(tmp_path)
+
+    path = save_snapshot(assessed, tmp_path / "snap.json", git_states=git_states)
+    snap = load_snapshot(path)
+
+    by = {h.name: h for h in snap.projects}
+    assert by["alloc-pipeline"].health_v2 == "stranded"
+    assert by["deepseek-deharness"].health_v2 == "paused"
+    assert by["gamma"].health_v2 == "dead"

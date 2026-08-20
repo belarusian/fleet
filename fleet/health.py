@@ -74,6 +74,8 @@ class ProjectHealth:
         One of ``"active"`` / ``"stalled"`` / ``"dead"``.
     last_activity:
         The most recent activity timestamp (UTC), or ``None``.
+    health_v2:
+        The v2 class (stranded/active/paused/dead) when known, else None.
     """
 
     name: str
@@ -83,6 +85,7 @@ class ProjectHealth:
     open_issues: int
     health: str
     last_activity: datetime | None
+    health_v2: str | None = None
 
 
 def _last_activity(ai_dir: Path) -> datetime | None:
