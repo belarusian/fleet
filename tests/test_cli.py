@@ -583,9 +583,9 @@ def test_cli_version_flag_prints_exact_version(capsys) -> None:
     assert out.strip() == f"fleet {__version__}"
 
 
-def test_cli_version_is_0_1_0() -> None:
-    """The shipped version is pinned to 0.1.0 (first release)."""
-    assert __version__ == "0.1.0"
+def test_cli_version_is_0_2_0() -> None:
+    """The shipped version is pinned to 0.2.0 (second release / Health v2)."""
+    assert __version__ == "0.2.0"
 
 
 # ---------------------------------------------------------------------------

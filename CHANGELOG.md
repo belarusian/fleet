@@ -4,6 +4,53 @@ All notable changes to `fleet` are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/), and the project
 adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-08-20
+
+Second release: **Health v2**. Adds a git-aware, four-class health scheme
+(`stranded` / `active` / `paused` / `dead`) that runs alongside the v1
+recency-only scheme, and ships it end-to-end through the report, CLI, and
+snapshot layers. The v2 classifier is a pure function of days-since-activity,
+last outcome, and a git-side work-in-flight signal; it resolves
+**most-severe-wins** (`stranded` > `active` > `paused` > `dead`), and only the
+exact outcome `max_steps_reached` counts as "work in flight". The v1 and v2
+dead boundaries intentionally diverge at exactly 30 days (v1 `> 30`, v2
+`>= 30`) and are not unified.
+
+### Added
+
+- **Git-side signal** (`fleet.gittest`): `read_gitstate(repo_path) ->
+  GitState(unmerged_build_branches, unpushed_commits)` and `EMPTY_STATE`.
+  Reports local `build*` branches with commits not on `main` and unpushed
+  commits on `main`; never raises (missing repo / no `origin` / no `main` /
+  any git failure → `EMPTY_STATE`).
+- **v2 classifier** (`fleet.health.classify_health_v2`): a pure, four-class,
+  most-severe-wins classifier (`stranded` / `active` / `paused` / `dead`).
+  `stranded` = an unmerged `build*` branch OR unpushed commits on `main`,
+  regardless of recency; `active` = touched ≤ 7 days AND work in flight;
+  `paused` = recently touched but done, or idle in the 8-29 day band; `dead`
+  = 30+ days untouched (or no activity signal) with nothing in flight.
+- **`ProjectHealth.health_v2`**: a defaulted field (`None`) carrying the v2
+  class when known.
+- **Report** (`fleet.report`): `render_portfolio(..., git_states=...)` gains an
+  opt-in trailing `Git` column (a compact work-in-flight summary:
+  `unmerged:<branch>` / `unpushed:<n>` / `-` when clean).
+- **CLI** (`fleet.cli`): `status` always shows the `Git` column; `--filter`
+  now accepts `stranded` / `paused` (selected with the v2 classifier over each
+  project's git state) in addition to the v1 `active` / `stalled` / `dead` /
+  `all`.
+- **Snapshot v2** (`fleet.snapshot`): `save_snapshot(..., git_states=...)`
+  computes and stores a per-row `health_v2`; `snapshot_diff` surfaces a
+  `health_v2 <a>-><b>` fragment (`-` for `None`); old v1 snapshots (no
+  `health_v2` key) still load with `health_v2` defaulting to `None`.
+- **Integration**: an end-to-end v2 pipeline test (in-tree fixture) plus a
+  live-root self-consistency smoke test.
+
+### Notes
+
+- The v1 `Health` column and `classify_health` are unchanged; v2 is additive.
+- The v1/v2 30-day dead-boundary divergence (`> 30` vs `>= 30`) is intentional
+  and pinned by tests in both schemes.
+
 ## [0.1.0] - 2026-08-19
 
 First release. `fleet` is a multi-project health scanner for the four
