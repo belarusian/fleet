@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from fleet import health
+from fleet.gittest import GitState
 from tests._fixtures import make_project
 
 NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -284,3 +285,111 @@ def test_project_health_dead(tmp_path: Path) -> None:
         h = health.project_health(ai)
     assert h.name == "deadproj"
     assert h.health == "dead"
+
+
+# --- classify_health_v2 tests (TICKET-056) ---
+#
+# classify_health_v2 is PURE: it takes (days, last_outcome, git_state) and
+# returns one of "stranded" / "active" / "paused" / "dead" (most-severe-wins).
+# Tests construct GitState(...) directly — no git subprocess, no tmp_path, no
+# fourseer. The "no git" cases use the empty state GitState((), 0).
+
+_EMPTY = GitState((), 0)
+
+
+def test_v2_unmerged_branch_stranded_any_recency() -> None:
+    """An unmerged build* branch is stranded regardless of recency (case 1)."""
+    gs = GitState(("build9/unmerged",), 0)
+    assert health.classify_health_v2(1, "exit:task_complete", gs) == "stranded"
+    assert health.classify_health_v2(40, None, gs) == "stranded"
+
+
+def test_v2_unpushed_commits_stranded_any_recency() -> None:
+    """Unpushed commits on main are stranded regardless of recency (case 2)."""
+    gs = GitState((), 3)
+    assert health.classify_health_v2(1, "exit:task_complete", gs) == "stranded"
+    assert health.classify_health_v2(40, None, gs) == "stranded"
+
+
+def test_v2_recent_max_steps_active() -> None:
+    """Recent (<=7d) + max_steps_reached, no git -> active (case 3)."""
+    assert health.classify_health_v2(1, "max_steps_reached", _EMPTY) == "active"
+
+
+def test_v2_stranded_beats_active() -> None:
+    """Recent + unmerged branch + max_steps_reached -> stranded (case 4)."""
+    gs = GitState(("build9/unmerged",), 0)
+    assert health.classify_health_v2(1, "max_steps_reached", gs) == "stranded"
+
+
+def test_v2_recent_task_complete_paused() -> None:
+    """Recent + exit:task_complete, nothing in flight -> paused (case 5)."""
+    assert health.classify_health_v2(1, "exit:task_complete", _EMPTY) == "paused"
+
+
+def test_v2_recent_none_outcome_paused() -> None:
+    """Recent + last_outcome None, nothing in flight -> paused (case 6)."""
+    assert health.classify_health_v2(1, None, _EMPTY) == "paused"
+
+
+def test_v2_old_nothing_in_flight_dead() -> None:
+    """30+ days, nothing in flight -> dead (case 7)."""
+    assert health.classify_health_v2(40, "exit:task_complete", _EMPTY) == "dead"
+    assert health.classify_health_v2(40, None, _EMPTY) == "dead"
+
+
+def test_v2_mid_band_paused() -> None:
+    """8-29 days idle, nothing in flight -> paused (benign, not yet dead) (case 8)."""
+    assert health.classify_health_v2(8, "exit:task_complete", _EMPTY) == "paused"
+    assert health.classify_health_v2(29, None, _EMPTY) == "paused"
+
+
+def test_v2_none_days_nothing_in_flight_dead() -> None:
+    """days is None, nothing in flight -> dead (no activity signal) (case 9)."""
+    assert health.classify_health_v2(None, "exit:task_complete", _EMPTY) == "dead"
+    assert health.classify_health_v2(None, None, _EMPTY) == "dead"
+
+
+def test_v2_none_days_max_steps_active() -> None:
+    """days is None + max_steps_reached -> active (work in flight) (case 10)."""
+    assert health.classify_health_v2(None, "max_steps_reached", _EMPTY) == "active"
+
+
+def test_v2_mid_band_max_steps_active() -> None:
+    """8-29 days + max_steps_reached, no git -> active (in flight, not recent) (case 11)."""
+    assert health.classify_health_v2(8, "max_steps_reached", _EMPTY) == "active"
+    assert health.classify_health_v2(29, "max_steps_reached", _EMPTY) == "active"
+
+
+def test_v2_stranded_beats_dead() -> None:
+    """Unpushed commits + 30+ days -> stranded (stranded beats dead) (case 12)."""
+    gs = GitState((), 3)
+    assert health.classify_health_v2(40, "exit:task_complete", gs) == "stranded"
+
+
+def test_v2_boundary_7_days() -> None:
+    """Boundary at 7 days: max_steps -> active, task_complete -> paused (case 13)."""
+    assert health.classify_health_v2(7, "max_steps_reached", _EMPTY) == "active"
+    assert health.classify_health_v2(7, "exit:task_complete", _EMPTY) == "paused"
+
+
+def test_v2_boundary_30_days() -> None:
+    """Boundary at 30 days: nothing in flight -> dead; 29 days -> paused (case 14).
+
+    Note the deliberate divergence from v1: v1 classify_health calls 30 days
+    "stalled" (its dead boundary is > 30), while v2 calls 30 days "dead" (its
+    dead boundary is >= 30). Do not unify the two.
+    """
+    assert health.classify_health_v2(30, "exit:task_complete", _EMPTY) == "dead"
+    assert health.classify_health_v2(29, "exit:task_complete", _EMPTY) == "paused"
+
+
+def test_v2_canary_alloc_pipeline_stranded() -> None:
+    """Canary (alloc-pipeline shape): unmerged build42 + unpushed -> stranded (case 15)."""
+    gs = GitState(("build42/model-persistence-rebalance",), 3)
+    assert health.classify_health_v2(1, "max_steps_reached", gs) == "stranded"
+
+
+def test_v2_canary_deepseek_deharness_paused() -> None:
+    """Canary (deepseek-deharness shape): recent + task_complete -> paused (case 16)."""
+    assert health.classify_health_v2(1, "exit:task_complete", _EMPTY) == "paused"
