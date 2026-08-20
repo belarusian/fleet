@@ -177,6 +177,43 @@ def test_cli_status_filter_stranded(tmp_path: Path, capsys) -> None:
     assert "gamma" not in out
 
 
+def test_cli_status_filter_paused(tmp_path: Path, capsys) -> None:
+    """`--filter paused` selects exactly the projects whose v2 class is paused.
+
+    A project is paused when it was recently touched but has nothing in flight
+    (no unmerged build* branch, no unpushed commits, and the last outcome is
+    not ``max_steps_reached``). Here only alpha qualifies (1 day old,
+    ``exit:task_complete``, clean git state), so only alpha's row is printed.
+    The row's Health cell still shows the v1 class (``active``) — the v1/v2
+    divergence is intentional and pinned here.
+    """
+    _build_root(tmp_path)
+    assessed = _assess_root(tmp_path)
+    alpha = next(h for h in assessed if h.name == "alpha")
+    git_states = {
+        "alpha": EMPTY_STATE,
+        "beta": EMPTY_STATE,
+        "gamma": EMPTY_STATE,
+    }
+
+    def _fake_read_gitstate(path):
+        return git_states[Path(path).name]
+
+    with mock.patch.object(health, "count_open_issues", side_effect=_issues), mock.patch.object(
+        health, "datetime", _FakeDatetime
+    ), mock.patch.object(cli, "read_gitstate", side_effect=_fake_read_gitstate):
+        rc = cli.main(["status", "--root", str(tmp_path), "--filter", "paused"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out == report.render_portfolio([alpha], git_states) + "\n"
+    assert "alpha" in out
+    assert "beta" not in out
+    assert "gamma" not in out
+    # The v2-filtered row still displays its v1 Health cell (active) — the
+    # v1/v2 divergence is intentional and pinned.
+    assert "| active |" in out
+
+
 def test_cli_status_shows_git_column(tmp_path: Path, capsys) -> None:
     """`status` (default filter) always shows the Git column.
 
