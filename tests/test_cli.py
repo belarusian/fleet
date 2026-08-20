@@ -19,6 +19,7 @@ from unittest import mock
 import pytest
 
 from fleet import __version__, cli, health, report, snapshot
+from fleet.gittest import EMPTY_STATE, GitState, read_gitstate
 from tests._fixtures import make_project
 
 NOW = datetime(2025, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -58,6 +59,17 @@ def _assess_root(root: Path) -> list[health.ProjectHealth]:
         return [health.assess(p.name, p.ai_dir, now=NOW) for p in projects]
 
 
+def _git_states(root: Path) -> dict[str, GitState]:
+    """Read the git state for every discovered project under *root*.
+
+    Mirrors the CLI's ``_git_states``. The tmp projects are not git repos,
+    so every value is the empty state (a clean ``-`` in the Git column).
+    """
+    from fleet import discover
+
+    return {p.name: read_gitstate(p.path) for p in discover.discover(root)}
+
+
 def _run_status(root: Path, *extra: str, capsys) -> str:
     """Run `fleet status --root <root> [extra...]` and return captured stdout."""
     argv = ["status", "--root", str(root), *extra]
@@ -75,14 +87,16 @@ def test_cli_status_matches_render_portfolio(tmp_path: Path, capsys) -> None:
     assessed = _assess_root(tmp_path)
 
     out = _run_status(tmp_path, capsys=capsys)
-    assert out == report.render_portfolio(assessed) + "\n"
+    assert out == report.render_portfolio(assessed, _git_states(tmp_path)) + "\n"
 
 
 def test_cli_status_filter_active(tmp_path: Path, capsys) -> None:
     """`--filter active` yields only the active project's row."""
     _build_root(tmp_path)
     assessed = _assess_root(tmp_path)
-    expected = report.render_portfolio([h for h in assessed if h.health == "active"])
+    expected = report.render_portfolio(
+        [h for h in assessed if h.health == "active"], _git_states(tmp_path)
+    )
 
     out = _run_status(tmp_path, "--filter", "active", capsys=capsys)
     assert out == expected + "\n"
@@ -95,7 +109,9 @@ def test_cli_status_filter_stalled(tmp_path: Path, capsys) -> None:
     """`--filter stalled` yields only the stalled project's row."""
     _build_root(tmp_path)
     assessed = _assess_root(tmp_path)
-    expected = report.render_portfolio([h for h in assessed if h.health == "stalled"])
+    expected = report.render_portfolio(
+        [h for h in assessed if h.health == "stalled"], _git_states(tmp_path)
+    )
 
     out = _run_status(tmp_path, "--filter", "stalled", capsys=capsys)
     assert out == expected + "\n"
@@ -108,7 +124,9 @@ def test_cli_status_filter_dead(tmp_path: Path, capsys) -> None:
     """`--filter dead` yields only the dead project's row."""
     _build_root(tmp_path)
     assessed = _assess_root(tmp_path)
-    expected = report.render_portfolio([h for h in assessed if h.health == "dead"])
+    expected = report.render_portfolio(
+        [h for h in assessed if h.health == "dead"], _git_states(tmp_path)
+    )
 
     out = _run_status(tmp_path, "--filter", "dead", capsys=capsys)
     assert out == expected + "\n"
@@ -123,9 +141,66 @@ def test_cli_status_filter_all(tmp_path: Path, capsys) -> None:
     assessed = _assess_root(tmp_path)
 
     out = _run_status(tmp_path, "--filter", "all", capsys=capsys)
-    assert out == report.render_portfolio(assessed) + "\n"
+    assert out == report.render_portfolio(assessed, _git_states(tmp_path)) + "\n"
     for name in ("alpha", "beta", "gamma"):
         assert name in out
+
+
+def test_cli_status_filter_stranded(tmp_path: Path, capsys) -> None:
+    """`--filter stranded` selects exactly the projects whose v2 class is stranded.
+
+    A project is stranded when git work is in flight (an unmerged build*
+    branch or unpushed commits), regardless of recency. Here only alpha has
+    an unmerged build branch, so only alpha's row is printed.
+    """
+    _build_root(tmp_path)
+    assessed = _assess_root(tmp_path)
+    alpha = next(h for h in assessed if h.name == "alpha")
+    git_states = {
+        "alpha": GitState(("build42/x",), 0),
+        "beta": EMPTY_STATE,
+        "gamma": EMPTY_STATE,
+    }
+
+    def _fake_read_gitstate(path):
+        return git_states[Path(path).name]
+
+    with mock.patch.object(health, "count_open_issues", side_effect=_issues), mock.patch.object(
+        health, "datetime", _FakeDatetime
+    ), mock.patch.object(cli, "read_gitstate", side_effect=_fake_read_gitstate):
+        rc = cli.main(["status", "--root", str(tmp_path), "--filter", "stranded"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out == report.render_portfolio([alpha], git_states) + "\n"
+    assert "alpha" in out
+    assert "beta" not in out
+    assert "gamma" not in out
+
+
+def test_cli_status_shows_git_column(tmp_path: Path, capsys) -> None:
+    """`status` (default filter) always shows the Git column.
+
+    With one project given an unmerged build branch, the header gains a
+    `Git` column and that project's row shows `unmerged:build42/x`.
+    """
+    _build_root(tmp_path)
+    git_states = {
+        "alpha": GitState(("build42/x",), 0),
+        "beta": EMPTY_STATE,
+        "gamma": EMPTY_STATE,
+    }
+
+    def _fake_read_gitstate(path):
+        return git_states[Path(path).name]
+
+    with mock.patch.object(health, "count_open_issues", side_effect=_issues), mock.patch.object(
+        health, "datetime", _FakeDatetime
+    ), mock.patch.object(cli, "read_gitstate", side_effect=_fake_read_gitstate):
+        rc = cli.main(["status", "--root", str(tmp_path)])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert " Git |" in out
+    assert "unmerged:build42/x" in out
 
 
 # ---------------------------------------------------------------------------

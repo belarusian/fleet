@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from fleet.gittest import EMPTY_STATE, GitState
 from fleet.health import ProjectHealth
 from fleet.report import render_portfolio
 
@@ -132,3 +133,77 @@ def test_render_portfolio_last_activity_descending() -> None:
     )
     md = render_portfolio([old_active, recent_dead])
     assert _names(md) == ["recent_dead", "old_active"]
+
+
+# ---------------------------------------------------------------------------
+# Opt-in Git column (git_states param)
+# ---------------------------------------------------------------------------
+
+
+def test_render_portfolio_no_git_states_is_six_column() -> None:
+    """render_portfolio(healths) with no git_states is the 6-column form."""
+    healths = [_ph("alpha", "active", last_activity=NOW, days=1)]
+    md = render_portfolio(healths)
+    lines = md.splitlines()
+    assert lines[0] == (
+        "| Project | Last Cycle | Last Outcome | Days Since Activity | Open Issues | Health |"
+    )
+    assert lines[1] == "|---|---|---|---|---|---|"
+    assert lines[2] == "| alpha | - | - | 1 | 0 | active |"
+    assert len(lines) == 3
+
+
+def test_render_portfolio_git_column_header_and_clean() -> None:
+    """With git_states, the header gains a Git column; a clean project is '-'."""
+    healths = [_ph("alpha", "active", last_activity=NOW, days=1)]
+    md = render_portfolio(healths, {"alpha": EMPTY_STATE})
+    lines = md.splitlines()
+    assert lines[0] == (
+        "| Project | Last Cycle | Last Outcome | Days Since Activity | Open Issues | Health | Git |"
+    )
+    assert lines[1] == "|---|---|---|---|---|---|---|"
+    # Clean (EMPTY_STATE) renders '-' in the Git cell.
+    assert lines[2] == "| alpha | - | - | 1 | 0 | active | - |"
+
+
+def test_render_portfolio_git_column_unmerged() -> None:
+    """An unmerged build branch renders 'unmerged:<branch>'."""
+    healths = [_ph("alpha", "active", last_activity=NOW, days=1)]
+    md = render_portfolio(healths, {"alpha": GitState(("build42/x",), 0)})
+    assert "| alpha | - | - | 1 | 0 | active | unmerged:build42/x |" in md
+
+
+def test_render_portfolio_git_column_unpushed() -> None:
+    """Unpushed commits render 'unpushed:<n>'."""
+    healths = [_ph("alpha", "active", last_activity=NOW, days=1)]
+    md = render_portfolio(healths, {"alpha": GitState((), 3)})
+    assert "| alpha | - | - | 1 | 0 | active | unpushed:3 |" in md
+
+
+def test_render_portfolio_git_column_combined() -> None:
+    """Both signals render 'unmerged:<b1>+<b2>,unpushed:<n>'."""
+    healths = [_ph("alpha", "active", last_activity=NOW, days=1)]
+    md = render_portfolio(healths, {"alpha": GitState(("build42/x", "build43/y"), 3)})
+    assert (
+        "| alpha | - | - | 1 | 0 | active | unmerged:build42/x+build43/y,unpushed:3 |" in md
+    )
+
+
+def test_render_portfolio_git_column_missing_name_defaults_clean() -> None:
+    """A project absent from git_states renders '-' (EMPTY_STATE default)."""
+    healths = [_ph("alpha", "active", last_activity=NOW, days=1)]
+    md = render_portfolio(healths, {"beta": GitState(("build42/x",), 0)})
+    # alpha is not in the dict -> EMPTY_STATE -> '-'.
+    assert "| alpha | - | - | 1 | 0 | active | - |" in md
+
+
+def test_render_portfolio_empty_input_with_git_states() -> None:
+    """Empty input WITH git_states yields the 7-column no-projects row."""
+    md = render_portfolio([], {"alpha": EMPTY_STATE})
+    lines = md.splitlines()
+    assert lines[0] == (
+        "| Project | Last Cycle | Last Outcome | Days Since Activity | Open Issues | Health | Git |"
+    )
+    assert lines[1] == "|---|---|---|---|---|---|---|"
+    assert lines[2] == "| (no projects discovered) | - | - | - | - | - | - |"
+    assert len(lines) == 3
