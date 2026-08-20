@@ -1,9 +1,10 @@
 """The ``fleet`` command-line interface.
 
 Subcommands:
-  - ``fleet status [--root DIR] [--filter active|stalled|dead|all]``
+  - ``fleet status [--root DIR] [--filter active|stalled|dead|stranded|paused|all]``
         Scan the root, assess each project, and print a markdown portfolio
-        table (optionally filtered by health).
+        table (optionally filtered by health). The table always shows a
+        ``Git`` column summarizing each project's git-side work in flight.
   - ``fleet snapshot [--root DIR] [--snapshot FILE]``
         Scan the root, assess each project, and save the portfolio as a JSON
         snapshot (the baseline that :func:`diff` compares against).
@@ -19,6 +20,12 @@ Design notes
   rows because ``removed`` rows have no resulting health, and filtering would
   hide part of the change set. Use ``status --filter`` for a health view of
   the current state.
+- ``status --filter`` accepts the v1 classes (``active`` / ``stalled`` /
+  ``dead``) and the two v2-only classes (``stranded`` / ``paused``). The v1
+  classes match the ``health`` column (v1 classification); ``stranded`` and
+  ``paused`` are selected with the v2 classifier
+  (:func:`fleet.health.classify_health_v2`) over the project's git state.
+  Full v2 integration of the ``health`` column is a later cycle.
 - Machine-readable (``--json``) output is intentionally not provided yet: no
   consumer needs it, and the data model (``ProjectHealth`` / ``DiffRow``)
   would serialize trivially if a concrete consumer appears.
@@ -33,8 +40,10 @@ from pathlib import Path
 from fleet import __version__, discover, report
 from fleet import health as health_mod
 from fleet import snapshot as snapshot_mod
+from fleet.gittest import EMPTY_STATE, GitState, read_gitstate
+from fleet.health import classify_health_v2
 
-_VALID_FILTERS = ("active", "stalled", "dead", "all")
+_VALID_FILTERS = ("active", "stalled", "dead", "stranded", "paused", "all")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -104,12 +113,35 @@ def _assess_all(root: str) -> list[health_mod.ProjectHealth]:
     return [health_mod.assess(p.name, p.ai_dir) for p in projects]
 
 
+def _git_states(root: str) -> dict[str, GitState]:
+    """Read the git work-in-flight state for every project under *root*.
+
+    Returns a mapping of project name -> :class:`~fleet.gittest.GitState`.
+    Projects that are not git repos (or have no ``main``) map to the empty
+    state (a clean ``-`` in the ``Git`` column).
+    """
+    return {p.name: read_gitstate(p.path) for p in discover.discover(root)}
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     """Run the ``status`` subcommand; return a process exit code."""
     healths = _assess_all(args.root)
+    git_states = _git_states(args.root)
     if args.filter != "all":
-        healths = [h for h in healths if h.health == args.filter]
-    print(report.render_portfolio(healths))
+        if args.filter in ("stranded", "paused"):
+            healths = [
+                h
+                for h in healths
+                if classify_health_v2(
+                    h.days_since_activity,
+                    h.last_outcome,
+                    git_states.get(h.name, EMPTY_STATE),
+                )
+                == args.filter
+            ]
+        else:
+            healths = [h for h in healths if h.health == args.filter]
+    print(report.render_portfolio(healths, git_states))
     return 0
 
 
