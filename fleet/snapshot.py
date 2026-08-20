@@ -8,11 +8,12 @@ current portfolio against a saved snapshot and reports what changed.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fleet.health import ProjectHealth
+from fleet.gittest import EMPTY_STATE, GitState
+from fleet.health import ProjectHealth, classify_health_v2
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,7 @@ def _health_to_dict(h: ProjectHealth) -> dict:
         "open_issues": h.open_issues,
         "health": h.health,
         "last_activity": h.last_activity.isoformat() if h.last_activity else None,
+        "health_v2": h.health_v2,
     }
 
 
@@ -59,19 +61,44 @@ def _health_from_dict(d: dict) -> ProjectHealth:
         open_issues=d.get("open_issues", 0),
         health=d.get("health", "dead"),
         last_activity=last_activity,
+        health_v2=d.get("health_v2"),
     )
 
 
-def save_snapshot(healths: list[ProjectHealth], path: str | Path) -> Path:
+def save_snapshot(
+    healths: list[ProjectHealth],
+    path: str | Path,
+    git_states: dict[str, GitState] | None = None,
+) -> Path:
     """Save *healths* as a JSON snapshot at *path*.
+
+    When *git_states* is provided, each row's v2 class is computed via
+    :func:`fleet.health.classify_health_v2` (using the row's days-since-activity,
+    last outcome, and its git state) and stored on the row's ``health_v2`` field
+    before serialization. When *git_states* is ``None``, rows are serialized as
+    is (their ``health_v2`` stays whatever it is, typically ``None``).
 
     Returns the path written.
     """
     p = Path(path).expanduser()
     p.parent.mkdir(parents=True, exist_ok=True)
+    if git_states is not None:
+        rows = [
+            replace(
+                h,
+                health_v2=classify_health_v2(
+                    h.days_since_activity,
+                    h.last_outcome,
+                    git_states.get(h.name, EMPTY_STATE),
+                ),
+            )
+            for h in healths
+        ]
+    else:
+        rows = list(healths)
     doc = {
         "created": datetime.now(tz=timezone.utc).isoformat(),
-        "projects": [_health_to_dict(h) for h in healths],
+        "projects": [_health_to_dict(h) for h in rows],
     }
     p.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     return p
@@ -150,6 +177,11 @@ def snapshot_diff(snapshot: Snapshot, current: list[ProjectHealth]) -> list[Diff
     return rows
 
 
+def _fmt_v2(v: str | None) -> str:
+    """Render a v2 class for a diff fragment, using ``-`` for ``None``."""
+    return v if v is not None else "-"
+
+
 def _field_changes(s: ProjectHealth, c: ProjectHealth) -> list[str]:
     """List the human-readable field changes between two health rows."""
     changes: list[str] = []
@@ -161,6 +193,8 @@ def _field_changes(s: ProjectHealth, c: ProjectHealth) -> list[str]:
         changes.append(f"health {s.health}->{c.health}")
     if s.open_issues != c.open_issues:
         changes.append(f"issues {s.open_issues}->{c.open_issues}")
+    if s.health_v2 != c.health_v2:
+        changes.append(f"health_v2 {_fmt_v2(s.health_v2)}->{_fmt_v2(c.health_v2)}")
     return changes
 
 

@@ -148,7 +148,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
 def _cmd_snapshot(args: argparse.Namespace) -> int:
     """Run the ``snapshot`` subcommand; return a process exit code."""
     healths = _assess_all(args.root)
-    path = snapshot_mod.save_snapshot(healths, args.snapshot)
+    path = snapshot_mod.save_snapshot(healths, args.snapshot, git_states=_git_states(args.root))
     print(f"saved {len(healths)} project(s) to {path}")
     return 0
 
